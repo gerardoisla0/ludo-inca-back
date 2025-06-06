@@ -131,23 +131,87 @@ io.on('connection', (socket: Socket) => {
 
   // Evento para iniciar el juego explícitamente
   socket.on('startGame', (roomId: string) => {
+    console.log('🎮 Starting game for room:', roomId);
     const room = gameManager.getRoom(roomId);
-    if (!room) return;
-    // Solo el primer jugador (dueño) puede iniciar
-    if (room.players[0].id === socket.id && room.players.length >= 1 && room.state === 'lobby') {
-      gameManager.startGame(roomId);
-      io.to(roomId).emit('gameStarted');
-      // Emitir el primer turno solo si hay jugadores
-      if (room.players.length > 0) {
-        gameState.nextTurn(roomId);
-      }
+    
+    if (!room || !room.players.length) {
+      console.error('❌ No se puede iniciar el juego: sala no existe o está vacía');
+      return;
     }
+
+    const success = gameManager.startGame(roomId);
+    if (success) {
+      // Asegurar que el estado del juego esté creado y actualizado
+      if (!gameState.getGameState(roomId)) {
+        gameState.createGame(roomId);
+        room.players.forEach(player => {
+          gameState.addPlayer(roomId, player);
+        });
+      }
+
+      console.log('✅ Juego iniciado para sala:', roomId);
+      io.to(roomId).emit('gameStarted');
+
+      // Configurar el primer turno
+      const firstPlayer = room.players[0];
+      console.log('🎲 Primer turno para:', firstPlayer.name);
+      
+      const gameStateData = gameState.getGameState(roomId);
+      if (gameStateData) {
+        // Usar índice 0 para el primer jugador
+        gameStateData.currentPlayer = 0;
+        
+        // Emitir el estado inicial del juego y el primer turno
+        io.to(roomId).emit('gameState', gameStateData);
+        io.to(roomId).emit('nextTurn', {
+          currentPlayer: firstPlayer.id,
+          playerName: firstPlayer.name,
+          color: firstPlayer.color
+        });
+      }
+    } else {
+      console.error('❌ Error al iniciar el juego para sala:', roomId);
+    }
+  });
+
+  // Manejo de turnos
+  socket.on('endTurn', (data: { roomId: string }) => {
+    const room = gameManager.getRoom(data.roomId);
+    if (!room) return;
+
+    const currentPlayerIndex = room.players.findIndex(p => p.id === socket.id);
+    if (currentPlayerIndex === -1) return;
+
+    const nextPlayerIndex = (currentPlayerIndex + 1) % room.players.length;
+    const nextPlayer = room.players[nextPlayerIndex];
+
+    io.to(data.roomId).emit('nextTurn', {
+      currentPlayer: nextPlayer.id,
+      playerName: nextPlayer.name,
+      color: nextPlayer.color
+    });
   });
 
   // Puedes emitir el estado de la sala cuando alguien lo solicite
   socket.on('getRoomState', (roomId: string) => {
+    console.log('📝 Solicitud de estado de sala:', roomId);
     const state = gameManager.getRoomState(roomId);
-    socket.emit('roomState', { roomId, state });
+    const gameStateData = gameState.getGameState(roomId);
+    const room = gameManager.getRoom(roomId);
+    
+    if (room && gameStateData) {
+      console.log('📝 Enviando estado completo:', { state, gameState: gameStateData });
+      socket.emit('roomState', { 
+        roomId, 
+        state: 'playing',
+        gameState: gameStateData,
+        currentPlayer: {
+          id: room.players[gameStateData.currentPlayer].id,
+          name: room.players[gameStateData.currentPlayer].name,
+          color: room.players[gameStateData.currentPlayer].color
+        }
+      });
+    }
   });
 
   // Evento para desconexión
