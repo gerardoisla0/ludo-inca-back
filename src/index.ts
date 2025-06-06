@@ -8,7 +8,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // URL del frontend
+    origin: "http://192.168.18.21:3000", // URL del frontend
     methods: ["GET", "POST"]
   }
 });
@@ -104,8 +104,22 @@ io.on('connection', (socket: Socket) => {
   // Evento para tirar el dado
   socket.on('rollDice', (roomId: string) => {
     console.log(`[rollDice] socket: ${socket.id}, roomId:`, roomId);
+    const gameStateData = gameState.getGameState(roomId);
+    const room = gameManager.getRoom(roomId);
+    
+    // Verificar que sea el turno del jugador
+    if (!gameStateData || !room) return;
+    const currentPlayer = room.players[gameStateData.currentPlayer];
+    if (currentPlayer.id !== socket.id) {
+      console.log('❌ No es el turno de este jugador');
+      return;
+    }
+
     const diceValue = gameState.rollDice(roomId);
-    io.to(roomId).emit('diceRolled', { value: diceValue });
+    io.to(roomId).emit('diceRolled', { 
+      value: diceValue,
+      playerId: socket.id 
+    });
   });
 
   // Evento para mover un token
@@ -182,8 +196,17 @@ io.on('connection', (socket: Socket) => {
     const currentPlayerIndex = room.players.findIndex(p => p.id === socket.id);
     if (currentPlayerIndex === -1) return;
 
+    // Solo permitir terminar el turno si es el turno del jugador
+    const gameStateData = gameState.getGameState(data.roomId);
+    if (!gameStateData || gameStateData.currentPlayer !== currentPlayerIndex) {
+      return;
+    }
+
     const nextPlayerIndex = (currentPlayerIndex + 1) % room.players.length;
     const nextPlayer = room.players[nextPlayerIndex];
+
+    // Actualizar el estado del juego
+    gameStateData.currentPlayer = nextPlayerIndex;
 
     io.to(data.roomId).emit('nextTurn', {
       currentPlayer: nextPlayer.id,
