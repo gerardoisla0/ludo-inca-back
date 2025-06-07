@@ -123,22 +123,91 @@ io.on('connection', (socket: Socket) => {
   });
 
   // Evento para mover un token
-  socket.on('moveToken', (data: { roomId: string; playerId: string; tokenIndex: number; steps: number }) => {
-    console.log(`[moveToken] socket: ${socket.id}, data:`, data);
-    const { roomId, playerId, tokenIndex, steps } = data;
+  socket.on('moveToken', (data: { 
+    roomId: string; 
+    playerId: string; 
+    tokenIndex: number; 
+    steps: number;
+    isInitialMove?: boolean 
+  }) => {
+    const { roomId, playerId, tokenIndex, steps, isInitialMove } = data;
+    const gameStateData = gameState.getGameState(roomId);
+    const room = gameManager.getRoom(roomId);
+
+    if (!gameStateData || !room) {
+      console.log('❌ Estado del juego no encontrado:', roomId);
+      return;
+    }
+
+    // Verificar que el juego esté iniciado y tenga estado válido
+    if (!gameStateData.tokens || !gameStateData.tokens[playerId]) {
+      console.log('❌ Estado de fichas no inicializado:', roomId);
+      return;
+    }
+
+    const currentPlayer = room.players[gameStateData.currentPlayer];
+    if (currentPlayer.id !== socket.id) {
+      console.log('❌ No es el turno de este jugador');
+      return;
+    }
+
+    // Verificar si es un movimiento inicial válido
+    if (isInitialMove) {
+      if (gameStateData.lastDiceRoll !== 6) {
+        console.log('❌ No se puede sacar ficha sin haber sacado 6');
+        socket.emit('moveInvalid', {
+          message: 'Necesitas sacar 6 para sacar una ficha',
+          tokenIndex,
+          playerId
+        });
+        return;
+      }
+    }
+
     const success = gameState.moveToken(roomId, playerId, tokenIndex, steps);
     
     if (success) {
+      // Emitir el movimiento a todos los jugadores
       io.to(roomId).emit('tokenMoved', {
         playerId,
         tokenIndex,
-        position: gameState.getGameState(roomId)?.tokens[playerId][tokenIndex].position || -1
+        steps,
+        isInitialMove,
+        position: gameStateData.tokens[playerId][tokenIndex].position || -1
       });
-      
-      // Pasar al siguiente turno
-      gameState.nextTurn(roomId, io);
-      io.to(roomId).emit('nextTurn', {
-        currentPlayer: gameState.getGameState(roomId)?.currentPlayer || 0
+
+      // Manejo de turnos mejorado
+      if (steps === 6) {
+        // Si sacó 6, el jugador puede seguir jugando
+        // Actualizar el estado pero mantener el mismo jugador
+        io.to(roomId).emit('nextTurn', {
+          currentPlayer: currentPlayer.id,
+          playerName: currentPlayer.name,
+          color: currentPlayer.color,
+          canRollAgain: true
+        });
+      } else {
+        // Si no sacó 6, pasar al siguiente jugador
+        const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
+        const nextPlayer = room.players[nextPlayerIndex];
+        
+        // Actualizar el estado del juego
+        gameStateData.currentPlayer = nextPlayerIndex;
+
+        io.to(roomId).emit('nextTurn', {
+          currentPlayer: nextPlayer.id,
+          playerName: nextPlayer.name,
+          color: nextPlayer.color,
+          canRollAgain: false
+        });
+      }
+    } else {
+      console.log('❌ Movimiento no válido');
+      // Notificar al cliente que el movimiento no fue válido
+      socket.emit('moveInvalid', {
+        message: 'Movimiento no válido',
+        tokenIndex,
+        playerId
       });
     }
   });
@@ -155,36 +224,42 @@ io.on('connection', (socket: Socket) => {
 
     const success = gameManager.startGame(roomId);
     if (success) {
-      // Asegurar que el estado del juego esté creado y actualizado
-      if (!gameState.getGameState(roomId)) {
-        gameState.createGame(roomId);
+      try {
+        // Forzar la creación/reinicio del estado del juego
+        gameState.createGame(roomId, true);
+        
+        // Inicializar los tokens para cada jugador
         room.players.forEach(player => {
           gameState.addPlayer(roomId, player);
         });
-      }
 
-      console.log('✅ Juego iniciado para sala:', roomId);
-      io.to(roomId).emit('gameStarted');
+        const gameStateData = gameState.getGameState(roomId);
+        if (gameStateData) {
+          // Inicializar tokens para todos los jugadores
+          room.players.forEach(player => {
+            if (!gameStateData.tokens[player.id]) {
+              gameStateData.tokens[player.id] = Array(4).fill({ position: -1 });
+            }
+          });
+          
+          // Configurar el primer turno
+          const firstPlayer = room.players[0];
+          gameStateData.currentPlayer = 0;
 
-      // Configurar el primer turno
-      const firstPlayer = room.players[0];
-      console.log('🎲 Primer turno para:', firstPlayer.name);
-      
-      const gameStateData = gameState.getGameState(roomId);
-      if (gameStateData) {
-        // Usar índice 0 para el primer jugador
-        gameStateData.currentPlayer = 0;
-        
-        // Emitir el estado inicial del juego y el primer turno
-        io.to(roomId).emit('gameState', gameStateData);
-        io.to(roomId).emit('nextTurn', {
-          currentPlayer: firstPlayer.id,
-          playerName: firstPlayer.name,
-          color: firstPlayer.color
-        });
+          // Emitir eventos
+          io.to(roomId).emit('gameStarted');
+          io.to(roomId).emit('gameState', gameStateData);
+          io.to(roomId).emit('nextTurn', {
+            currentPlayer: firstPlayer.id,
+            playerName: firstPlayer.name,
+            color: firstPlayer.color,
+            canRollAgain: false
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error al inicializar estado del juego:', error);
+        return;
       }
-    } else {
-      console.error('❌ Error al iniciar el juego para sala:', roomId);
     }
   });
 

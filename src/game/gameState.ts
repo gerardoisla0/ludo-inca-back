@@ -1,168 +1,102 @@
 import { Player } from './gameManager';
 
-export interface Token {
-  id: string;
+interface TokenState {
   position: number;
-  inHome: boolean;
-  inFinalPath: boolean;
 }
 
-export interface Game {
-  id: string;
-  players: Player[];
+interface GameStateData {
   currentPlayer: number;
-  diceValue: number;
-  tokens: {
-    [playerId: string]: Token[];
-  };
-  board: {
-    size: number;
-    cells: number[][];
-  };
-  started: boolean;
+  tokens: { [playerId: string]: TokenState[] };
+  lastDiceRoll: number | null;
+  canRollAgain: boolean;
+  players: Player[];
   turnTimer: NodeJS.Timeout | null;
+  started: boolean;
 }
 
 export class GameState {
-  private games: Map<string, Game> = new Map();
-  private readonly BOARD_SIZE = 14;
-  private readonly TOKENS_PER_PLAYER = 4;
+  private games: Map<string, GameStateData> = new Map();
 
-  constructor() {
-    // Inicializar el tablero
-    this.initializeBoard();
-  }
-
-  private initializeBoard(): void {
-    // Crear el tablero 14x14
-    const board: number[][] = Array(this.BOARD_SIZE)
-      .fill(0)
-      .map(() => Array(this.BOARD_SIZE).fill(0));
-
-    // Configurar las casillas especiales
-    // (Esta es una implementación básica, puedes ajustar según tus necesidades)
-    // Casillas de inicio
-    board[2][2] = 1; // Verde
-    board[2][12] = 1; // Amarillo
-    board[12][12] = 1; // Azul
-    board[12][2] = 1; // Rojo
-
-    // Casillas de meta
-    board[7][7] = 2;
-
-    // Casillas de camino final
-    // (Esto es solo un ejemplo, ajusta según tu diseño del juego)
-    for (let i = 0; i < 6; i++) {
-      board[7][7 + i] = 3; // Verde
-      board[7 + i][7] = 3; // Amarillo
-      board[7][7 - i] = 3; // Azul
-      board[7 - i][7] = 3; // Rojo
-    }
-  }
-
-  createGame(gameId: string): void {
-    if (this.games.has(gameId)) {
-      throw new Error('Game already exists');
-    }
-
-    const game: Game = {
-      id: gameId,
-      players: [],
+  createGame(roomId: string, force: boolean = false): void {
+    const initialState: GameStateData = {
       currentPlayer: 0,
-      diceValue: 1,
       tokens: {},
-      board: {
-        size: this.BOARD_SIZE,
-        cells: Array(this.BOARD_SIZE)
-          .fill(0)
-          .map(() => Array(this.BOARD_SIZE).fill(0))
-      },
-      started: false,
-      turnTimer: null
+      lastDiceRoll: null,
+      canRollAgain: false,
+      players: [],
+      turnTimer: null,
+      started: false
     };
-
-    this.games.set(gameId, game);
-    console.log(`[GameState] Juego creado: ${gameId}`);
+    this.games.set(roomId, initialState);
   }
 
-  addPlayer(gameId: string, player: Player): void {
-    const game = this.games.get(gameId);
-    if (!game) {
-      throw new Error('Game not found');
+  addPlayer(roomId: string, player: Player): void {
+    const game = this.games.get(roomId);
+    if (!game) return;
+
+    if (!game.players) {
+      game.players = [];
     }
 
-    // Evitar agregar el mismo jugador dos veces
     if (!game.players.some(p => p.id === player.id)) {
       game.players.push(player);
-      game.tokens[player.id] = Array(this.TOKENS_PER_PLAYER).fill(0).map(() => ({
-        id: `${player.id}-${Date.now()}`,
-        position: -1, // -1 significa que está en casa
-        inHome: true,
-        inFinalPath: false
-      }));
-      console.log(`[GameState] Jugador agregado: ${player.name} (${player.id}) a juego ${gameId}`);
-    }
-  }
-
-  rollDice(gameId: string): number {
-    const game = this.games.get(gameId);
-    if (!game) {
-      throw new Error('Game not found');
-    }
-
-    game.diceValue = Math.floor(Math.random() * 6) + 1;
-    console.log(`[GameState] Dado lanzado en juego ${gameId}: valor = ${game.diceValue}`);
-    return game.diceValue;
-  }
-
-  moveToken(gameId: string, playerId: string, tokenIndex: number, steps: number): boolean {
-    const game = this.games.get(gameId);
-    if (!game) {
-      throw new Error('Game not found');
-    }
-
-    if (!game.started) {
-      console.log(`[GameState] No se puede mover ficha, el juego ${gameId} no ha comenzado`);
-      return false;
-    }
-
-    if (game.currentPlayer !== game.players.findIndex(p => p.id === playerId)) {
-      console.log(`[GameState] No es el turno del jugador ${playerId} en juego ${gameId}`);
-      return false;
-    }
-
-    const tokens = game.tokens[playerId];
-    if (!tokens || tokenIndex < 0 || tokenIndex >= tokens.length) {
-      return false;
-    }
-
-    const token = tokens[tokenIndex];
-    if (token.inHome && steps !== 6) {
-      console.log(`[GameState] El token está en casa y no se sacó un 6 en juego ${gameId}`);
-      return false;
-    }
-
-    // Lógica de movimiento
-    if (token.inHome) {
-      token.position = 0;
-      token.inHome = false;
-    } else {
-      token.position += steps;
-      // Verificar si entra al camino final
-      if (token.position >= 52) { // 52 es el número de casillas antes del camino final
-        token.inFinalPath = true;
-        token.position = token.position - 52;
+      // Inicializar tokens para el nuevo jugador
+      if (!game.tokens[player.id]) {
+        game.tokens[player.id] = Array(4).fill({ position: -1 });
       }
     }
+  }
 
-    // Verificar si llega a la meta
-    if (token.inFinalPath && token.position >= 6) {
-      token.position = -2; // -2 significa que llegó a la meta
-      console.log(`[GameState] Token llegó a la meta en juego ${gameId}`);
+  getGameState(roomId: string): GameStateData | undefined {
+    return this.games.get(roomId);
+  }
+
+  rollDice(roomId: string): number {
+    const game = this.games.get(roomId);
+    const value = Math.floor(Math.random() * 6) + 1;
+    if (game) {
+      game.lastDiceRoll = value;
+      game.canRollAgain = value === 6;
+      console.log(`[GameState] 🎲 Jugador sacó ${value} en juego ${roomId}`);
+      console.log(`[GameState] ${value === 6 ? '✨ Tiene turno extra!' : 'Siguiente turno'}`);
+    }
+    return value;
+  }
+
+  moveToken(roomId: string, playerId: string, tokenIndex: number, steps: number): boolean {
+    const game = this.games.get(roomId);
+    if (!game || !game.tokens || !game.tokens[playerId]) {
+      console.log('[GameState] ❌ Estado del juego no válido');
+      return false;
     }
 
-    console.log(`[GameState] Token movido en juego ${gameId}: player=${playerId}, tokenIndex=${tokenIndex}, steps=${steps}`);
-    return true;
+    const token = game.tokens[playerId][tokenIndex];
+    if (!token) return false;
+
+    console.log(`[GameState] 🎯 Intentando mover ficha ${tokenIndex} del jugador ${playerId}`);
+    console.log(`[GameState] Posición actual: ${token.position}, Dados: ${game.lastDiceRoll}`);
+
+    // Si está en casa y sacó 6, puede salir
+    if (token.position === -1) {
+      if (game.lastDiceRoll !== 6) {
+        console.log('[GameState] ❌ No puede salir sin sacar 6');
+        return false;
+      }
+      token.position = 0;
+      console.log('[GameState] ✨ Ficha sale de casa!');
+      return true;
+    }
+
+    // Movimiento normal
+    const newPosition = token.position + steps;
+    if (newPosition <= 52) {
+      token.position = newPosition;
+      console.log(`[GameState] ✅ Ficha movida a posición ${newPosition}`);
+      return true;
+    }
+
+    console.log('[GameState] ❌ Movimiento fuera de rango');
+    return false;
   }
 
   nextTurn(gameId: string, io?: any): void {
@@ -199,10 +133,6 @@ export class GameState {
     game.turnTimer = setTimeout(() => {
       this.nextTurn(gameId, io);
     }, 30000); // 30 segundos por turno
-  }
-
-  getGameState(gameId: string): Game | null {
-    return this.games.get(gameId) || null;
   }
 
   removePlayer(gameId: string, playerId: string): void {

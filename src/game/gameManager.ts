@@ -7,17 +7,16 @@ export interface Player {
   ready: boolean;
 }
 
-export interface GameRoom {
+interface Room {
   id: string;
   players: Player[];
+  isStarted: boolean;
+  state: 'waiting' | 'playing' | 'finished';
   maxPlayers: number;
-  started: boolean;
-  // Agrega estado de la sala
-  state?: 'lobby' | 'playing' | 'finished';
 }
 
 export class GameManager {
-  private rooms: Map<string, GameRoom> = new Map();
+  private rooms: Map<string, Room> = new Map();
   private playerColors: ('red' | 'green' | 'blue' | 'yellow')[] = ['red', 'green', 'blue', 'yellow'];
 
   constructor() {
@@ -29,16 +28,13 @@ export class GameManager {
     if (this.rooms.has(roomId)) {
       throw new Error('Room already exists');
     }
-
-    const room: GameRoom = {
+    this.rooms.set(roomId, {
       id: roomId,
       players: [],
-      maxPlayers: 4,
-      started: false,
-      state: 'lobby'
-    };
-
-    this.rooms.set(roomId, room);
+      isStarted: false,
+      state: 'waiting',
+      maxPlayers: 4
+    });
   }
 
   joinRoom(socket: Socket, roomId: string, playerName: string): Player | null {
@@ -85,29 +81,29 @@ export class GameManager {
     }
   }
 
-  getRoom(roomId: string): GameRoom | null {
+  getRoom(roomId: string): Room | null {
     return this.rooms.get(roomId) || null;
+  }
+
+  isGameStarted(roomId: string): boolean {
+    const room = this.rooms.get(roomId);
+    return room?.isStarted || false;
   }
 
   startGame(roomId: string): boolean {
     const room = this.rooms.get(roomId);
-    if (!room) {
-      return false;
+    if (room) {
+      room.isStarted = true;
+      room.state = 'playing';
+      return true;
     }
-
-    // Permitir iniciar con al menos 1 jugador
-    if (room.players.length < 1) {
-      return false;
-    }
-
-    room.started = true;
-    room.state = 'playing';
-    return true;
+    return false;
   }
 
   finishGame(roomId: string): void {
     const room = this.rooms.get(roomId);
     if (room) {
+      room.isStarted = false;
       room.state = 'finished';
     }
   }
