@@ -4,6 +4,16 @@ interface TokenState {
   position: number;
 }
 
+interface CapturedToken {
+  playerId: string;
+  tokenIndex: number;
+}
+
+interface MoveResult {
+  success: boolean;
+  capturedTokens?: CapturedToken[];
+}
+
 interface GameStateData {
   currentPlayer: number;
   tokens: { [playerId: string]: TokenState[] };
@@ -63,15 +73,15 @@ export class GameState {
     return value;
   }
 
-  moveToken(roomId: string, playerId: string, tokenIndex: number, steps: number): boolean {
+  moveToken(roomId: string, playerId: string, tokenIndex: number, steps: number): MoveResult {
     const game = this.games.get(roomId);
     if (!game || !game.tokens || !game.tokens[playerId]) {
       console.log('[GameState] ❌ Estado del juego no válido');
-      return false;
+      return { success: false };
     }
 
     const token = game.tokens[playerId][tokenIndex];
-    if (!token) return false;
+    if (!token) return { success: false };
 
     console.log(`[GameState] 🎯 Intentando mover ficha ${tokenIndex} del jugador ${playerId}`);
     console.log(`[GameState] Posición actual: ${token.position}, Dados: ${game.lastDiceRoll}`);
@@ -80,11 +90,14 @@ export class GameState {
     if (token.position === -1) {
       if (game.lastDiceRoll !== 6) {
         console.log('[GameState] ❌ No puede salir sin sacar 6');
-        return false;
+        return { success: false };
       }
       token.position = 0;
       console.log('[GameState] ✨ Ficha sale de casa!');
-      return true;
+      
+      // Verificar si hay capturas al salir de casa
+      const capturedTokens = this.checkCaptures(game, playerId, tokenIndex, 0);
+      return { success: true, capturedTokens };
     }
 
     // Movimiento normal
@@ -92,11 +105,50 @@ export class GameState {
     if (newPosition <= 52) {
       token.position = newPosition;
       console.log(`[GameState] ✅ Ficha movida a posición ${newPosition}`);
-      return true;
+      
+      // Verificar si se captura alguna ficha enemiga en la posición final
+      const capturedTokens = this.checkCaptures(game, playerId, tokenIndex, newPosition);
+      return { success: true, capturedTokens };
     }
 
     console.log('[GameState] ❌ Movimiento fuera de rango');
-    return false;
+    return { success: false };
+  }
+
+  private checkCaptures(game: GameStateData, playerId: string, tokenIndex: number, position: number): CapturedToken[] {
+    const capturedTokens: CapturedToken[] = [];
+    
+    // Si es un camino seguro o la posición es inválida, no capturar
+    if (position < 0) return capturedTokens;
+    
+    // Verificar cada jugador y sus tokens
+    Object.entries(game.tokens).forEach(([enemyId, enemyTokens]) => {
+      // No verificar colisiones con tokens propios
+      if (enemyId === playerId) return;
+      
+      // Verificar cada token del enemigo
+      enemyTokens.forEach((enemyToken, enemyTokenIndex) => {
+        // IMPORTANTE: Solo se captura si coinciden exactamente las posiciones finales
+        // y no es una posición segura
+        if (enemyToken.position === position && !this.isSafePosition(position)) {
+          console.log(`[GameState] 🎯 Token del jugador ${playerId} capturó token ${enemyTokenIndex} del jugador ${enemyId} en la posición ${position}`);
+          
+          // Devolver el token a casa
+          enemyToken.position = -1;
+          
+          // Registrar la captura
+          capturedTokens.push({ playerId: enemyId, tokenIndex: enemyTokenIndex });
+        }
+      });
+    });
+    
+    return capturedTokens;
+  }
+  
+  private isSafePosition(position: number): boolean {
+    // Definir las posiciones seguras en el tablero donde no se puede capturar
+    const safePositions = [0, 8, 13, 21, 26, 34, 39, 47]; // Ajustar según el diseño del tablero
+    return safePositions.includes(position);
   }
 
   nextTurn(gameId: string, io?: any): void {

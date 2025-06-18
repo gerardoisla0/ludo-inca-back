@@ -8,7 +8,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://192.168.18.21:3000", // URL del frontend
+    origin: "http://localhost:3000", // URL del frontend
     methods: ["GET", "POST"]
   }
 });
@@ -116,10 +116,30 @@ io.on('connection', (socket: Socket) => {
     }
 
     const diceValue = gameState.rollDice(roomId);
+    
+    // Enviar resultado a todos los jugadores
     io.to(roomId).emit('diceRolled', { 
       value: diceValue,
-      playerId: socket.id 
+      playerId: socket.id,
+      canRollAgain: diceValue === 6
     });
+    
+    // Si sacó 6, revisar si el jugador tiene opciones para mover
+    if (diceValue === 6) {
+      const playerTokensState = gameStateData.tokens[socket.id];
+      if (playerTokensState) {
+        // Verificar si hay al menos una ficha en casa y una en el tablero
+        const hasTokenAtHome = playerTokensState.some(t => t.position === -1);
+        const hasTokenOnBoard = playerTokensState.some(t => t.position >= 0 && t.position < 52);
+        
+        if (hasTokenAtHome && hasTokenOnBoard) {
+          // Avisar al cliente que tiene múltiples opciones
+          socket.emit('multipleOptions', {
+            message: 'Puedes sacar una ficha o mover una existente'
+          });
+        }
+      }
+    }
   });
 
   // Evento para mover un token
@@ -164,43 +184,53 @@ io.on('connection', (socket: Socket) => {
       }
     }
 
-    const success = gameState.moveToken(roomId, playerId, tokenIndex, steps);
+    const result = gameState.moveToken(roomId, playerId, tokenIndex, steps);
     
-    if (success) {
+    if (result.success) {
       // Emitir el movimiento a todos los jugadores
       io.to(roomId).emit('tokenMoved', {
         playerId,
         tokenIndex,
         steps,
         isInitialMove,
-        position: gameStateData.tokens[playerId][tokenIndex].position || -1
+        position: gameStateData.tokens[playerId][tokenIndex].position || -1,
+        capturedTokens: result.capturedTokens
       });
 
+      // Si capturó una ficha, emitir el evento de captura
+      if (result.capturedTokens && result.capturedTokens.length > 0) {
+        for (const captured of result.capturedTokens) {
+          io.to(roomId).emit('tokenCaptured', {
+            playerId: captured.playerId,
+            tokenIndex: captured.tokenIndex
+          });
+        }
+      }
+
       // Manejo de turnos mejorado
-      if (steps === 6) {
-        // Si sacó 6, el jugador puede seguir jugando
-        // Actualizar el estado pero mantener el mismo jugador
+      if (gameStateData.lastDiceRoll === 6) {
+        // Si sacó 6, mantener el turno y permitir otro lanzamiento
         io.to(roomId).emit('nextTurn', {
           currentPlayer: currentPlayer.id,
           playerName: currentPlayer.name,
           color: currentPlayer.color,
-          canRollAgain: true
+          canRollAgain: true,
+          message: '¡Sacaste 6! Tira de nuevo'
         });
-      } else {
-        // Si no sacó 6, pasar al siguiente jugador
-        const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
-        const nextPlayer = room.players[nextPlayerIndex];
-        
-        // Actualizar el estado del juego
-        gameStateData.currentPlayer = nextPlayerIndex;
-
-        io.to(roomId).emit('nextTurn', {
-          currentPlayer: nextPlayer.id,
-          playerName: nextPlayer.name,
-          color: nextPlayer.color,
-          canRollAgain: false
-        });
+        return; // Importante: retornar aquí para no cambiar de turno
       }
+
+      // Si no sacó 6, pasar al siguiente jugador
+      const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
+      const nextPlayer = room.players[nextPlayerIndex];
+      gameStateData.currentPlayer = nextPlayerIndex;
+
+      io.to(roomId).emit('nextTurn', {
+        currentPlayer: nextPlayer.id,
+        playerName: nextPlayer.name,
+        color: nextPlayer.color,
+        canRollAgain: false
+      });
     } else {
       console.log('❌ Movimiento no válido');
       // Notificar al cliente que el movimiento no fue válido
