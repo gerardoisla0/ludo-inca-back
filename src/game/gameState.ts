@@ -12,6 +12,9 @@ interface CapturedToken {
 interface MoveResult {
   success: boolean;
   capturedTokens?: CapturedToken[];
+  reachedEnd?: boolean;
+  hasWon?: boolean;
+  needsExactRoll?: boolean;  // Nueva propiedad para indicar que necesita un número exacto
 }
 
 interface GameStateData {
@@ -100,19 +103,81 @@ export class GameState {
       return { success: true, capturedTokens };
     }
 
-    // Movimiento normal
-    const newPosition = token.position + steps;
-    if (newPosition <= 52) {
-      token.position = newPosition;
-      console.log(`[GameState] ✅ Ficha movida a posición ${newPosition}`);
-      
-      // Verificar si se captura alguna ficha enemiga en la posición final
-      const capturedTokens = this.checkCaptures(game, playerId, tokenIndex, newPosition);
-      return { success: true, capturedTokens };
+    // Constantes para gestionar el camino
+    const PERIMETER_END = 51;  // Última posición del perímetro
+    const FINAL_PATH_START = 52; // Inicio del camino final
+    const FINAL_PATH_END = 57;  // Final del camino (posición de victoria)
+
+    // Si ya está en la posición final, no se puede mover más
+    if (token.position === FINAL_PATH_END) {
+      console.log('[GameState] ❌ Ficha ya está en la posición final, no puede moverse más');
+      return { success: false };
     }
 
-    console.log('[GameState] ❌ Movimiento fuera de rango');
-    return { success: false };
+    // Calcular la nueva posición
+    let newPosition = token.position + steps;
+
+    // Gestionar el paso del perímetro al camino final
+    if (token.position <= PERIMETER_END && newPosition > PERIMETER_END) {
+      // Si la ficha está en el perímetro y pasaría al camino final
+      if (newPosition > FINAL_PATH_END) {
+        // Si se pasaría del final, rebote
+        const excess = newPosition - FINAL_PATH_END;
+        newPosition = FINAL_PATH_END - excess;
+        console.log('[GameState] 🔄 Rebotando en el final:', newPosition);
+      }
+    }
+    // Si ya está en el camino final
+    else if (token.position >= FINAL_PATH_START) {
+      // Verificar que no se pase del final
+      if (newPosition > FINAL_PATH_END) {
+        console.log('[GameState] ❌ Movimiento excede la posición final del camino');
+        return { 
+          success: false,
+          needsExactRoll: true  // Indicar que necesita un número exacto
+        };
+      }
+    }
+
+    // Si llega exactamente a la posición final
+    if (newPosition === FINAL_PATH_END) {
+      token.position = newPosition;
+      console.log('[GameState] 🏆 Ficha ha llegado a la posición final!');
+      
+      // Verificar si el jugador ha ganado (todas sus fichas en posición final)
+      const hasWon = this.checkWinCondition(game, playerId);
+      if (hasWon) {
+        console.log(`[GameState] 🎉 El jugador ${playerId} ha ganado!`);
+        return { success: true, hasWon: true };
+      }
+      
+      return { success: true, reachedEnd: true };
+    }
+
+    // Movimiento normal
+    token.position = newPosition;
+    console.log(`[GameState] ✅ Ficha movida a posición ${newPosition}`);
+    
+    // Verificar capturas solo en el perímetro, no en camino final
+    const capturedTokens: CapturedToken[] = [];
+    if (newPosition <= PERIMETER_END) {
+      const captures = this.checkCaptures(game, playerId, tokenIndex, newPosition);
+      if (captures && captures.length > 0) {
+        captures.forEach(capture => capturedTokens.push(capture));
+      }
+    }
+    
+    return { success: true, capturedTokens };
+  }
+
+  // Método para verificar si todas las fichas del jugador han llegado a la posición final
+  private checkWinCondition(game: GameStateData, playerId: string): boolean {
+    const playerTokens = game.tokens[playerId];
+    if (!playerTokens) return false;
+    
+    // Verificar si todas las fichas están en la posición final (57)
+    const FINAL_POSITION = 57;  // Final del camino
+    return playerTokens.every(token => token.position === FINAL_POSITION);
   }
 
   private checkCaptures(game: GameStateData, playerId: string, tokenIndex: number, position: number): CapturedToken[] {
@@ -210,4 +275,38 @@ export class GameState {
     }
     // Si la sala está en espera (started === false), NO la elimines aunque no haya jugadores
   }
+
+  // Método para verificar si un jugador puede hacer algún movimiento válido
+  canMakeValidMove(roomId: string, playerId: string, diceValue: number): boolean {
+    const game = this.games.get(roomId);
+    if (!game || !game.tokens || !game.tokens[playerId]) return false;
+
+    const playerTokens = game.tokens[playerId];
+    
+    // Comprobar cada token del jugador
+    for (let i = 0; i < playerTokens.length; i++) {
+      const token = playerTokens[i];
+      
+      // Si está en casa y sacó un 6, puede moverse
+      if (token.position === -1 && diceValue === 6) return true;
+      
+      // Si no está en casa ni en la posición final
+      if (token.position >= 0 && token.position < this.FINAL_PATH_END) {
+        // Si está en camino final, verificar que no se pase
+        if (token.position >= this.FINAL_PATH_START) {
+          if (token.position + diceValue <= this.FINAL_PATH_END) return true;
+        } else {
+          // Si está en perímetro normal, siempre puede moverse
+          return true;
+        }
+      }
+    }
+    
+    // Si llegamos aquí, no hay movimiento válido
+    return false;
+  }
+
+  private readonly PERIMETER_END = 51;
+  private readonly FINAL_PATH_START = 52;
+  private readonly FINAL_PATH_END = 57;
 }

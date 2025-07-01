@@ -194,8 +194,19 @@ io.on('connection', (socket: Socket) => {
         steps,
         isInitialMove,
         position: gameStateData.tokens[playerId][tokenIndex].position || -1,
-        capturedTokens: result.capturedTokens
+        capturedTokens: result.capturedTokens,
+        reachedEnd: result.reachedEnd
       });
+
+      // Si el jugador ganó, notificar a todos
+      if (result.hasWon) {
+        io.to(roomId).emit('playerWon', {
+          playerId,
+          playerName: room.players.find(p => p.id === playerId)?.name || 'Unknown'
+        });
+        // No terminar el turno aquí para permitir celebración
+        return;
+      }
 
       // Si capturó una ficha, emitir el evento de captura
       if (result.capturedTokens && result.capturedTokens.length > 0) {
@@ -233,13 +244,64 @@ io.on('connection', (socket: Socket) => {
       });
     } else {
       console.log('❌ Movimiento no válido');
-      // Notificar al cliente que el movimiento no fue válido
-      socket.emit('moveInvalid', {
-        message: 'Movimiento no válido',
-        tokenIndex,
-        playerId
-      });
+      
+      // Si es un error por necesitar un número exacto para la meta
+      if (result.needsExactRoll) {
+        socket.emit('moveInvalid', {
+          message: 'Necesitas un número exacto para llegar a la meta',
+          tokenIndex,
+          playerId,
+          needsExactRoll: true
+        });
+        
+        // Pasar automáticamente al siguiente jugador
+        const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
+        const nextPlayer = room.players[nextPlayerIndex];
+        gameStateData.currentPlayer = nextPlayerIndex;
+
+        io.to(roomId).emit('nextTurn', {
+          currentPlayer: nextPlayer.id,
+          playerName: nextPlayer.name,
+          color: nextPlayer.color,
+          canRollAgain: false,
+          automaticSkip: true  // Indicador de que se saltó automáticamente
+        });
+      } else {
+        // Otros errores de movimiento
+        socket.emit('moveInvalid', {
+          message: 'Movimiento no válido',
+          tokenIndex,
+          playerId
+        });
+      }
     }
+  });
+
+  // Añadimos un nuevo evento para saltar turno automáticamente
+  socket.on('skipTurn', (data: { roomId: string }) => {
+    const gameStateData = gameState.getGameState(data.roomId);
+    const room = gameManager.getRoom(data.roomId);
+    
+    if (!gameStateData || !room) return;
+    
+    // Verificar que sea el turno del jugador
+    const currentPlayer = room.players[gameStateData.currentPlayer];
+    if (currentPlayer.id !== socket.id) {
+      console.log('❌ No es el turno de este jugador');
+      return;
+    }
+    
+    // Pasar al siguiente jugador
+    const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
+    const nextPlayer = room.players[nextPlayerIndex];
+    gameStateData.currentPlayer = nextPlayerIndex;
+
+    io.to(data.roomId).emit('nextTurn', {
+      currentPlayer: nextPlayer.id,
+      playerName: nextPlayer.name,
+      color: nextPlayer.color,
+      canRollAgain: false
+    });
   });
 
   // Evento para iniciar el juego explícitamente
