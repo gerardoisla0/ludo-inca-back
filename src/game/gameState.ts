@@ -1,12 +1,15 @@
 import { Player } from './gameManager';
 
+import { v4 as uuidv4 } from 'uuid';
+
 interface TokenState {
+  id: string;
   position: number;
 }
 
 interface CapturedToken {
   playerId: string;
-  tokenIndex: number;
+  tokenId: string;
 }
 
 interface MoveResult {
@@ -29,6 +32,10 @@ interface GameStateData {
 
 export class GameState {
   private games: Map<string, GameStateData> = new Map();
+
+  public deleteGame(roomId: string): void {
+    this.games.delete(roomId);
+  }
 
   createGame(roomId: string, force: boolean = false): void {
     const initialState: GameStateData = {
@@ -55,7 +62,8 @@ export class GameState {
       game.players.push(player);
       // Inicializar tokens para el nuevo jugador
       if (!game.tokens[player.id]) {
-        game.tokens[player.id] = Array(4).fill({ position: -1 });
+        // Cada ficha debe ser un objeto independiente y tener un UUID
+        game.tokens[player.id] = Array(4).fill(0).map(() => ({ id: uuidv4(), position: -1 }));
       }
     }
   }
@@ -76,17 +84,29 @@ export class GameState {
     return value;
   }
 
-  moveToken(roomId: string, playerId: string, tokenIndex: number, steps: number): MoveResult {
+  moveToken(roomId: string, playerId: string, tokenId: string, steps: number): MoveResult {
     const game = this.games.get(roomId);
     if (!game || !game.tokens || !game.tokens[playerId]) {
       console.log('[GameState] ❌ Estado del juego no válido');
       return { success: false };
     }
 
-    const token = game.tokens[playerId][tokenIndex];
-    if (!token) return { success: false };
+    // Helper para encontrar el índice de la ficha por UUID
+    const allTokens = game.tokens[playerId];
+    const tokenIndex = allTokens.findIndex(tk => tk.id === tokenId);
+    if (tokenIndex === -1) {
+      console.log(`[GameState] ❌ Token no encontrado: id ${tokenId}`);
+      return { success: false };
+    }
+    const token = allTokens[tokenIndex];
 
-    console.log(`[GameState] 🎯 Intentando mover ficha ${tokenIndex} del jugador ${playerId}`);
+    // Log de todas las posiciones de las fichas del jugador antes de mover
+    console.log(`[GameState] 🧩 Estado de todas las fichas del jugador ${playerId}:`);
+    allTokens.forEach((tk, idx) => {
+      console.log(`  - Ficha ${idx} (id: ${tk.id}): posición ${tk.position}`);
+    });
+
+    console.log(`[GameState] 🎯 Intentando mover ficha id ${tokenId} del jugador ${playerId}`);
     console.log(`[GameState] Posición actual: ${token.position}, Dados: ${game.lastDiceRoll}`);
 
     // Si está en casa y sacó 6, puede salir
@@ -99,7 +119,7 @@ export class GameState {
       console.log('[GameState] ✨ Ficha sale de casa!');
       
       // Verificar si hay capturas al salir de casa
-      const capturedTokens = this.checkCaptures(game, playerId, tokenIndex, 0);
+      const capturedTokens = this.checkCaptures(game, playerId, tokenId, 0);
       return { success: true, capturedTokens };
     }
 
@@ -114,22 +134,30 @@ export class GameState {
       return { success: false };
     }
 
-    // Calcular la nueva posición
+    // Calcular la nueva posición SOLO para la ficha seleccionada
     let newPosition = token.position + steps;
 
-    // Gestionar el paso del perímetro al camino final
+    // Gestionar el paso del perímetro al camino final SOLO para esta ficha
     if (token.position <= PERIMETER_END && newPosition > PERIMETER_END) {
       // Si la ficha está en el perímetro y pasaría al camino final
       if (newPosition > FINAL_PATH_END) {
-        // Si se pasaría del final, rebote
+        // Si se pasaría del final, rebote SOLO para esta ficha
         const excess = newPosition - FINAL_PATH_END;
         newPosition = FINAL_PATH_END - excess;
+        // Si el rebote la deja fuera del rango válido, bloquear movimiento
+        if (newPosition < FINAL_PATH_START) {
+          console.log('[GameState] ❌ Movimiento excede la posición final del camino (rebote fuera de rango)');
+          return {
+            success: false,
+            needsExactRoll: true
+          };
+        }
         console.log('[GameState] 🔄 Rebotando en el final:', newPosition);
       }
     }
-    // Si ya está en el camino final
+    // Si ya está en el camino final SOLO para esta ficha
     else if (token.position >= FINAL_PATH_START) {
-      // Verificar que no se pase del final
+      // Verificar que no se pase del final SOLO para esta ficha
       if (newPosition > FINAL_PATH_END) {
         console.log('[GameState] ❌ Movimiento excede la posición final del camino');
         return { 
@@ -143,14 +171,13 @@ export class GameState {
     if (newPosition === FINAL_PATH_END) {
       token.position = newPosition;
       console.log('[GameState] 🏆 Ficha ha llegado a la posición final!');
-      
-      // Verificar si el jugador ha ganado (todas sus fichas en posición final)
+      // Solo se gana si las 4 fichas están en la posición final
       const hasWon = this.checkWinCondition(game, playerId);
       if (hasWon) {
-        console.log(`[GameState] 🎉 El jugador ${playerId} ha ganado!`);
+        console.log(`[GameState] 🎉 El jugador ${playerId} ha ganado! (las 4 fichas en el final)`);
         return { success: true, hasWon: true };
       }
-      
+      // Si no, solo reportar que una ficha llegó al final
       return { success: true, reachedEnd: true };
     }
 
@@ -161,7 +188,7 @@ export class GameState {
     // Verificar capturas solo en el perímetro, no en camino final
     const capturedTokens: CapturedToken[] = [];
     if (newPosition <= PERIMETER_END) {
-      const captures = this.checkCaptures(game, playerId, tokenIndex, newPosition);
+      const captures = this.checkCaptures(game, playerId, tokenId, newPosition);
       if (captures && captures.length > 0) {
         captures.forEach(capture => capturedTokens.push(capture));
       }
@@ -180,7 +207,7 @@ export class GameState {
     return playerTokens.every(token => token.position === FINAL_POSITION);
   }
 
-  private checkCaptures(game: GameStateData, playerId: string, tokenIndex: number, position: number): CapturedToken[] {
+  private checkCaptures(game: GameStateData, playerId: string, tokenId: string, position: number): CapturedToken[] {
     const capturedTokens: CapturedToken[] = [];
     
     // Si es un camino seguro o la posición es inválida, no capturar
@@ -192,17 +219,17 @@ export class GameState {
       if (enemyId === playerId) return;
       
       // Verificar cada token del enemigo
-      enemyTokens.forEach((enemyToken, enemyTokenIndex) => {
+      enemyTokens.forEach((enemyToken) => {
         // IMPORTANTE: Solo se captura si coinciden exactamente las posiciones finales
         // y no es una posición segura
         if (enemyToken.position === position && !this.isSafePosition(position)) {
-          console.log(`[GameState] 🎯 Token del jugador ${playerId} capturó token ${enemyTokenIndex} del jugador ${enemyId} en la posición ${position}`);
+          console.log(`[GameState] 🎯 Token del jugador ${playerId} capturó token id ${enemyToken.id} del jugador ${enemyId} en la posición ${position}`);
           
           // Devolver el token a casa
           enemyToken.position = -1;
           
           // Registrar la captura
-          capturedTokens.push({ playerId: enemyId, tokenIndex: enemyTokenIndex });
+          capturedTokens.push({ playerId: enemyId, tokenId: enemyToken.id });
         }
       });
     });

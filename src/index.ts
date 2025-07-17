@@ -8,7 +8,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // URL del frontend
+    origin: "http://192.168.18.34:3000", // URL del frontend
     methods: ["GET", "POST"]
   }
 });
@@ -27,6 +27,35 @@ app.get('/', (req: Request, res: Response) => {
 
 // Socket.IO
 io.on('connection', (socket: Socket) => {
+
+  // Esperar confirmación de animación antes de pasar turno
+  socket.on('moveAnimationDone', (data: { tokenId: string }) => {
+    // Buscar la sala del jugador
+    const roomId = Object.keys(socket.rooms).find(room => room !== socket.id);
+    if (!roomId) return;
+    const gameStateData = gameState.getGameState(roomId);
+    const room = gameManager.getRoom(roomId);
+    if (!gameStateData || !room) return;
+
+    // Verificar que sea el turno del jugador
+    const currentPlayer = room.players[gameStateData.currentPlayer];
+    if (currentPlayer.id !== socket.id) {
+      console.log('❌ moveAnimationDone: No es el turno de este jugador');
+      return;
+    }
+
+    // Avanzar turno normalmente (como en endTurn)
+    const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
+    const nextPlayer = room.players[nextPlayerIndex];
+    gameStateData.currentPlayer = nextPlayerIndex;
+
+    io.to(roomId).emit('nextTurn', {
+      currentPlayer: nextPlayer.id,
+      playerName: nextPlayer.name,
+      color: nextPlayer.color,
+      canRollAgain: false
+    });
+  });
   console.log('Nuevo cliente conectado:', socket.id);
 
   socket.on('createRoom', (data: { roomId: string }) => {
@@ -53,20 +82,23 @@ io.on('connection', (socket: Socket) => {
   socket.on('joinRoom', (data: { roomId: string; name: string }) => {
     console.log('🔄 Intentando unir a sala:', data);
     const { roomId, name } = data;
-    
     try {
+      // Si la sala no existe o ya fue eliminada, redirigir al home
+      const room = gameManager.getRoom(roomId);
+      if (!room || room.state === 'finished') {
+        console.log('⛔ Sala no existe o ya terminó, redirigiendo al home:', roomId);
+        socket.emit('redirectHome', { message: 'La sala ya no está disponible.' });
+        return;
+      }
       const player = gameManager.joinRoom(socket, roomId, name);
       if (player) {
         socket.join(roomId);
-        
         if (!gameState.getGameState(roomId)) {
           gameState.createGame(roomId);
         }
         gameState.addPlayer(roomId, player);
-        
         console.log('✅ Jugador unido:', player);
         socket.emit('joinSuccess', { player, roomId });
-        
         // Enviar actualización a todos en la sala
         const players = gameManager.getRoomPlayers(roomId);
         io.to(roomId).emit('roomUpdate', players);
@@ -146,11 +178,11 @@ io.on('connection', (socket: Socket) => {
   socket.on('moveToken', (data: { 
     roomId: string; 
     playerId: string; 
-    tokenIndex: number; 
+    tokenId: string; 
     steps: number;
     isInitialMove?: boolean 
   }) => {
-    const { roomId, playerId, tokenIndex, steps, isInitialMove } = data;
+    const { roomId, playerId, tokenId, steps, isInitialMove } = data;
     const gameStateData = gameState.getGameState(roomId);
     const room = gameManager.getRoom(roomId);
 
@@ -177,23 +209,24 @@ io.on('connection', (socket: Socket) => {
         console.log('❌ No se puede sacar ficha sin haber sacado 6');
         socket.emit('moveInvalid', {
           message: 'Necesitas sacar 6 para sacar una ficha',
-          tokenIndex,
+          tokenId,
           playerId
         });
         return;
       }
     }
 
-    const result = gameState.moveToken(roomId, playerId, tokenIndex, steps);
+    const result = gameState.moveToken(roomId, playerId, tokenId, steps);
     
     if (result.success) {
       // Emitir el movimiento a todos los jugadores
+      const token = gameStateData.tokens[playerId].find(tk => tk.id === tokenId);
       io.to(roomId).emit('tokenMoved', {
         playerId,
-        tokenIndex,
+        tokenId,
         steps,
         isInitialMove,
-        position: gameStateData.tokens[playerId][tokenIndex].position || -1,
+        position: token ? token.position : -1,
         capturedTokens: result.capturedTokens,
         reachedEnd: result.reachedEnd
       });
@@ -213,7 +246,7 @@ io.on('connection', (socket: Socket) => {
         for (const captured of result.capturedTokens) {
           io.to(roomId).emit('tokenCaptured', {
             playerId: captured.playerId,
-            tokenIndex: captured.tokenIndex
+            tokenId: captured.tokenId
           });
         }
       }
@@ -249,7 +282,7 @@ io.on('connection', (socket: Socket) => {
       if (result.needsExactRoll) {
         socket.emit('moveInvalid', {
           message: 'Necesitas un número exacto para llegar a la meta',
-          tokenIndex,
+          tokenId,
           playerId,
           needsExactRoll: true
         });
@@ -270,7 +303,7 @@ io.on('connection', (socket: Socket) => {
         // Otros errores de movimiento
         socket.emit('moveInvalid', {
           message: 'Movimiento no válido',
-          tokenIndex,
+          tokenId,
           playerId
         });
       }
@@ -411,8 +444,16 @@ io.on('connection', (socket: Socket) => {
     if (roomId) {
       gameManager.leaveRoom(socket);
       gameState.removePlayer(roomId, socket.id);
-      io.to(roomId).emit('roomUpdate', gameManager.getRoomPlayers(roomId));
-      io.to(roomId).emit('gameState', gameState.getGameState(roomId));
+      // Si ya no quedan jugadores en la sala, eliminar la sala y el estado del juego
+      const players = gameManager.getRoomPlayers(roomId);
+      if (players.length === 0) {
+        console.log(`🗑️ Eliminando sala y estado de juego por desconexión total: ${roomId}`);
+        gameManager.deleteRoom(roomId);
+        gameState.deleteGame(roomId);
+      } else {
+        io.to(roomId).emit('roomUpdate', players);
+        io.to(roomId).emit('gameState', gameState.getGameState(roomId));
+      }
     }
     console.log('Cliente desconectado:', socket.id);
   });

@@ -17,6 +17,10 @@ interface Room {
 
 export class GameManager {
   private rooms: Map<string, Room> = new Map();
+
+  public deleteRoom(roomId: string): void {
+    this.rooms.delete(roomId);
+  }
   private playerColors: ('red' | 'green' | 'blue' | 'yellow')[] = ['red', 'green', 'blue', 'yellow'];
 
   constructor() {
