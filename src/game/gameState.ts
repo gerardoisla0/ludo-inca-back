@@ -1,6 +1,7 @@
-import { Player } from './gameManager';
 
+import { Player } from './gameManager';
 import { v4 as uuidv4 } from 'uuid';
+const { getTokenBoardCoord } = require('./getTokenBoardCoord');
 
 interface TokenState {
   id: string;
@@ -209,31 +210,33 @@ export class GameState {
 
   private checkCaptures(game: GameStateData, playerId: string, tokenId: string, position: number): CapturedToken[] {
     const capturedTokens: CapturedToken[] = [];
-    
-    // Si es un camino seguro o la posición es inválida, no capturar
     if (position < 0) return capturedTokens;
-    
+
+    // Obtener color del jugador que mueve
+    const player = game.players.find(p => p.id === playerId);
+    if (!player) return capturedTokens;
+    const myColor = player.color;
+    const myCoord = getTokenBoardCoord(myColor, position);
+    if (!myCoord) return capturedTokens;
+
     // Verificar cada jugador y sus tokens
     Object.entries(game.tokens).forEach(([enemyId, enemyTokens]) => {
-      // No verificar colisiones con tokens propios
       if (enemyId === playerId) return;
-      
-      // Verificar cada token del enemigo
+      const enemyPlayer = game.players.find(p => p.id === enemyId);
+      if (!enemyPlayer) return;
+      const enemyColor = enemyPlayer.color;
       enemyTokens.forEach((enemyToken) => {
-        // IMPORTANTE: Solo se captura si coinciden exactamente las posiciones finales
-        // y no es una posición segura
-        if (enemyToken.position === position && !this.isSafePosition(position)) {
-          console.log(`[GameState] 🎯 Token del jugador ${playerId} capturó token id ${enemyToken.id} del jugador ${enemyId} en la posición ${position}`);
-          
-          // Devolver el token a casa
+        if (enemyToken.position < 0) return;
+        const enemyCoord = getTokenBoardCoord(enemyColor, enemyToken.position);
+        if (!enemyCoord) return;
+        // Comparar coordenadas absolutas
+        if (enemyCoord[0] === myCoord[0] && enemyCoord[1] === myCoord[1] && !this.isSafePosition(position)) {
+          console.log(`[GameState] 🎯 Token del jugador ${playerId} capturó token id ${enemyToken.id} del jugador ${enemyId} en la coordenada (${myCoord[0]},${myCoord[1]})`);
           enemyToken.position = -1;
-          
-          // Registrar la captura
           capturedTokens.push({ playerId: enemyId, tokenId: enemyToken.id });
         }
       });
     });
-    
     return capturedTokens;
   }
   

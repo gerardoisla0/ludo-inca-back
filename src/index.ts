@@ -217,7 +217,7 @@ io.on('connection', (socket: Socket) => {
     }
 
     const result = gameState.moveToken(roomId, playerId, tokenId, steps);
-    
+
     if (result.success) {
       // Emitir el movimiento a todos los jugadores
       const token = gameStateData.tokens[playerId].find(tk => tk.id === tokenId);
@@ -231,13 +231,16 @@ io.on('connection', (socket: Socket) => {
         reachedEnd: result.reachedEnd
       });
 
-      // Si el jugador ganó, notificar a todos
+      // Si el jugador ganó, notificar a todos y finalizar la sala
       if (result.hasWon) {
         io.to(roomId).emit('playerWon', {
           playerId,
           playerName: room.players.find(p => p.id === playerId)?.name || 'Unknown'
         });
-        // No terminar el turno aquí para permitir celebración
+        // Marcar la sala como finalizada
+        gameManager.finishGame(roomId);
+        // Opcional: podrías limpiar el estado del juego aquí si lo deseas
+        // gameState.deleteGame(roomId);
         return;
       }
 
@@ -277,7 +280,7 @@ io.on('connection', (socket: Socket) => {
       });
     } else {
       console.log('❌ Movimiento no válido');
-      
+
       // Si es un error por necesitar un número exacto para la meta
       if (result.needsExactRoll) {
         socket.emit('moveInvalid', {
@@ -286,7 +289,7 @@ io.on('connection', (socket: Socket) => {
           playerId,
           needsExactRoll: true
         });
-        
+
         // Pasar automáticamente al siguiente jugador
         const nextPlayerIndex = (gameStateData.currentPlayer + 1) % room.players.length;
         const nextPlayer = room.players[nextPlayerIndex];
