@@ -8,7 +8,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://192.168.18.34:3000", // URL del frontend
+    origin: "https://master.d1xb46mu7ervrj.amplifyapp.com", // URL del frontend
     methods: ["GET", "POST"]
   }
 });
