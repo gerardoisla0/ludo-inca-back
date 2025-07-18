@@ -251,7 +251,11 @@ io.on('connection', (socket: Socket) => {
             playerId: captured.playerId,
             tokenId: captured.tokenId
           });
+          // Emitir evento para que el frontend reproduzca el sonido de captura
+          io.to(roomId).emit('playSound', { sound: 'headshoot.mp3' });
         }
+        // Emitir el estado actualizado del juego para sincronizar fichas capturadas
+        io.to(roomId).emit('gameState', gameStateData);
       }
 
       // Manejo de turnos mejorado
